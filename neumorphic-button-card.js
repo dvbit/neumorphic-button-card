@@ -1,5 +1,5 @@
 /**
- * Neumorphic Button Card for Home Assistant  — v13
+ * Neumorphic Button Card for Home Assistant  — v15
  * Matches the hacs-neumorphic-template theme aesthetic
  *
  * ── Core options ─────────────────────────────────────────────────────────────
@@ -21,6 +21,12 @@
  *   font_size, font_weight, font_style, letter_spacing, text_transform — see label docs
  * icon_off_color:  ''               # icon color when OFF (default: grey #a0a0a8)
  * show_dot:        true             # false to hide the state indicator dot
+ *
+ * display_only:    false            # true = read-only display card
+ *   When true: the knob and icon remain as a visual state indicator (on/off glow,
+ *   animations etc.) but ALL pointer events, tap/hold actions and ripple are
+ *   disabled. The card cannot change the entity value. Use to observe state
+ *   without accidental interaction — e.g. a sensor or a status indicator.
  * icon_animation:  pulse            # pulse|spin|bounce|swing|flash|none
  * size:            68               # knob diameter px
  * icon_size:       28               # icon px (auto if omitted)
@@ -279,6 +285,13 @@ function buildStyles(knobSize, iconSize, shape, glowIntensity, depth, onColor, o
   .hold-ring { position: absolute; border-radius: inherit; inset: 0; border: 3px solid var(--nm-on-color); opacity: 0; pointer-events: none; transform: scale(0.75); }
   .hold-ring.charging { animation: nm-hold-ring var(--nm-hold-timeout, 500ms) linear forwards; }
   @keyframes nm-hold-ring { 0%{transform:scale(0.75);opacity:0.15} 80%{transform:scale(1.05);opacity:0.7} 100%{transform:scale(1.12);opacity:0} }
+  /* ── display-only mode: visual only, no interaction ── */
+  .card-wrapper.mode-display {
+    cursor: default !important;
+    pointer-events: none !important;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
 `;
 }
 
@@ -304,7 +317,7 @@ class NeumorphicButtonCard extends HTMLElement {
     minorCfg.position   = majorCfg.position;
     this._config = {
       tap_action: 'toggle', hold_action: 'none', hold_timeout: 500, hold_service: '', hold_service_data: {},
-      card_mode: 'default', icon_animation: 'none', shape: 'round',
+      card_mode: 'default', icon_animation: 'none', shape: 'round', display_only: false,
       ...config, _knobSize: knobSize, _iconSize: iconSize,
       _glowIntensity: glowIntensity, _depth: depth, _onColor: onColor, _offColor: offColor,
       _majorCfg: majorCfg, _minorCfg: minorCfg,
@@ -319,9 +332,16 @@ class NeumorphicButtonCard extends HTMLElement {
     const style = document.createElement('style');
     style.textContent = buildStyles(cfg._knobSize, cfg._iconSize, cfg.shape, cfg._glowIntensity, cfg._depth, cfg._onColor, cfg._offColor, major, minor);
 
-    const wrapper = document.createElement('div');
     const cardMode = (cfg.card_mode || 'default').toLowerCase();
-    wrapper.className = 'card-wrapper' + (cardMode !== 'default' ? ` mode-${cardMode}` : '');
+    const displayOnly = cfg.display_only === true;
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'card-wrapper' +
+      (displayOnly ? ' mode-display' : (cardMode !== 'default' ? ` mode-${cardMode}` : ''));
+
+    // display_only shares the same DOM as normal mode — pointer-events: none
+    // is applied via .mode-display CSS; no separate branch needed.
+    this._displayValueEl = null;
 
     const knob = document.createElement('div');
     knob.className = 'knob off';
@@ -383,7 +403,7 @@ class NeumorphicButtonCard extends HTMLElement {
       _didHold = false;
       if (this._config.hold_action && this._config.hold_action !== 'none') {
         holdRing.classList.remove('charging');
-        void holdRing.offsetWidth; // reflow to restart animation
+        void holdRing.offsetWidth;
         holdRing.classList.add('charging');
         _holdTimer = setTimeout(() => {
           _didHold = true;
@@ -416,9 +436,12 @@ class NeumorphicButtonCard extends HTMLElement {
   }
 
   _updateState() {
-    if (!this._hass || !this._config || !this._knob || !this._dot) return;
+    if (!this._hass || !this._config) return;
     const entity = this._hass.states[this._config.entity];
     if (!entity) return;
+
+    // display_only: state still updates knob on/off visually; no special branch needed
+    if (!this._knob || !this._dot) return;
     const OFF = new Set(['off','unavailable','unknown','idle','paused','away','closed','locked','standby']);
     const ON  = new Set(['on','playing','home','open','unlocked']);
     const isOn = ON.has(entity.state) || !OFF.has(entity.state);
@@ -838,6 +861,8 @@ class NeumorphicButtonCardEditor extends HTMLElement {
     `)}
 
     ${this._section('button', 'Button style', '⬤', `
+      ${this._toggle('display_only', 'Display only (read-only value, no knob)')}
+      ${this._val('display_only', false) ? '' : `
       <div class="row">
         <div class="half">${this._range('size', 'Size (px)', 36, 120, 2, 'px')}</div>
         <div class="half">${this._range('icon_size', 'Icon size (px)', 10, 80, 1, 'px')}</div>
@@ -847,22 +872,42 @@ class NeumorphicButtonCardEditor extends HTMLElement {
       ])}
       <div class="row">
         <div class="half">${this._range('depth', '3D Depth', 0, 2, 0.1)}</div>
-        <div class="half">${this._range('glow_intensity', 'Glow intensity', 0, 2, 0.1)}</div>
       </div>
       ${this._toggle('show_dot', 'Show state dot')}
+      `}
       ${this._select('card_mode', 'Card background', [
         {value:'default', label:'Default — neumorphic card with shadow'},
         {value:'flat',    label:'Flat — transparent, no shadow, small padding'},
         {value:'none',    label:'None — invisible container, zero padding'},
       ])}
+      ${this._toggle('use_theme_colors', 'Use theme colors')}
     `)}
 
-    ${this._section('anim', 'Icon animation', '✨', `
+    ${this._section('colors', 'Colors', '🎨', `
+      ${this._color('background_color', 'Background', '#e0e5ec')}
+      ${this._text('shadow_dark',  'Shadow dark  (rgba or hex)', 'var(--neumorphic-shadow-dark, #b8bec7)')}
+      ${this._text('shadow_light', 'Shadow light (rgba or hex)', 'var(--neumorphic-shadow-light, #ffffff)')}
+    `)}
+
+    ${this._section('glow', 'Glow', '✨', `
+      ${this._toggle('glow_enabled', 'Enable glow')}
+      ${this._range('glow_intensity', 'Intensity (0–2)', 0, 2, 0.1)}
+      <div class="row">
+        <div class="half">${this._number('glow_size',    'Size (px) — raw override',    0, 60, 1)}</div>
+        <div class="half">${this._number('glow_opacity', 'Opacity — raw override (0–1)', 0,  1, 0.01)}</div>
+      </div>
+    `)}
+
+    ${this._section('anim', 'Icon animation', '🔄', `
       ${this._select('icon_animation', 'Animation (plays when ON)', [
         {value:'none',label:'None'},{value:'pulse',label:'Pulse'},
         {value:'spin',label:'Spin'},{value:'bounce',label:'Bounce'},
         {value:'swing',label:'Swing'},{value:'flash',label:'Flash'},
       ])}
+      <div class="row">
+        <div class="half">${this._number('icon_animation_speed_min', 'Speed at min (s)', 0.1, 20, 0.1)}</div>
+        <div class="half">${this._number('icon_animation_speed_max', 'Speed at max (s)', 0.05, 10, 0.05)}</div>
+      </div>
     `)}
 
     ${this._section('major', 'Major label', '𝗔', this._labelSection('label_major', 'Major label'))}
@@ -1016,7 +1061,7 @@ NeumorphicButtonCard.cardEditor = 'neumorphic-button-card-editor';
 });
 
 console.info(
-  '%c NEUMORPHIC-BUTTON-CARD %c v13 ',
+  '%c NEUMORPHIC-BUTTON-CARD %c v15 ',
   'color:#fff;background:#e8824a;padding:2px 6px;border-radius:4px 0 0 4px;font-weight:700',
   'color:#e8824a;background:#1c1c1c;padding:2px 6px;border-radius:0 4px 4px 0;font-weight:700',
 );
